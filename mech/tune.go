@@ -10,6 +10,10 @@ import (
 // Both are unset in the submitted container, so the shipped behavior is exactly the compiled defaults.
 var envOverrides = map[string][]byte{}
 
+// Salt re-seeds the bot's random choices (home spots, unstuck moves) without changing any logic.
+// 0 = the unsalted bot.
+var Salt int64 = 1
+
 func init() {
 	for _, k := range []string{"MECH_P", "MECH_SQ"} {
 		if v := os.Getenv(k); v != "" {

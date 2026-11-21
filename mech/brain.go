@@ -16,6 +16,9 @@ type Track struct {
 	LOS     bool
 	Closing float64
 	Engage  bool
+	// jink tracking for LeadDamp (chinatown): last velocity and recent direction reversals
+	pv    [2]float64
+	flips []float64
 }
 
 type known struct {
@@ -93,6 +96,9 @@ type Brain struct {
 	npcBearing         float64
 	notPractice        bool
 	startAlive, kills  int
+	gateHeld           int
+	leadDamped         int
+	aimHeld            int
 	otherDead          int
 	stickID            int
 	stickAt, loseAt    float64
@@ -152,6 +158,22 @@ type Params struct {
 	SpeedUp     bool
 	Backstab    float64
 	LethalK     float64
+	// FireGate (chinatown): fire the gun only when the path to the predicted impact point is clear.
+	FireGate bool
+	// LeadDamp (chinatown): shrink gun lead for jinking targets by the MSE-optimal factor
+	// (1 - e^(-2 r tof)) / (2 r tof), r = observed direction reversals per second.
+	LeadDamp bool
+	// AimGate (chinatown): give the one-tick turn-ahead credit only if the previous aim command already
+	// pointed at this aim point (commands execute with delay; the turret is still following the old one).
+	AimGate bool
+}
+
+func leadK(t *Track, tof float64) float64 {
+	x := 2 * float64(len(t.flips)) / 4 * tof
+	if x < 1e-3 {
+		return 1
+	}
+	return (1 - math.Exp(-x)) / x
 }
 
 func DefaultParams() Params {
@@ -168,6 +190,9 @@ func NewBrain(h *Hello, w *World) *Brain {
 	seed := int64(h.Seed)
 	if seed == 0 {
 		seed = int64(h.Slot) + 1
+	}
+	if Salt != 0 {
+		seed ^= Salt * 0x5851F42D4C957F2D
 	}
 	return &Brain{
 		W: w, Cfg: h.Config, Slot: h.Slot, rng: rand.New(rand.NewSource(seed)), P: applyEnv(DefaultParams(), "MECH_P"),
@@ -201,6 +226,7 @@ func (b *Brain) Act(o *Obs) (act Action) {
 		}
 	}()
 	b.step(o, &act)
+	b.record(o, &act)
 	if act.Aim != nil {
 		a := act.Aim
 		if math.IsNaN(a[0]) || math.IsInf(a[0], 0) || math.IsNaN(a[1]) || math.IsInf(a[1], 0) {
@@ -250,6 +276,22 @@ func (b *Brain) observe(o *Obs) {
 		}
 		t.MechSeen = *m
 		t.Seen = now
+		if m.Kind == "mech" {
+			vx, vy := m.Vel[0], m.Vel[1]
+			ox, oy := t.pv[0], t.pv[1]
+			if a, c := hyp(vx, vy), hyp(ox, oy); a > 3 && c > 3 && (vx*ox+vy*oy)/(a*c) < 0.5 {
+				t.flips = append(t.flips, now)
+			}
+			k := 0
+			for _, f := range t.flips {
+				if now-f < 4 {
+					t.flips[k] = f
+					k++
+				}
+			}
+			t.flips = t.flips[:k]
+			t.pv = [2]float64{vx, vy}
+		}
 		dx, dy := m.Pos[0]-me.Pos[0], m.Pos[1]-me.Pos[1]
 		t.Dist = hyp(dx, dy)
 		c := b.center(t)
@@ -960,8 +1002,16 @@ func (b *Brain) step(o *Obs, act *Action) {
 
 		var gy, gp float64
 		gunOK := false
+		tvl := tv
+		if gun != nil && b.P.LeadDamp && isMech && target != nil {
+			k := leadK(target, dist/math.Max(1, gun.Stats.Speed))
+			tvl[0], tvl[1] = tv[0]*k, tv[1]*k
+			if k < 0.98 {
+				b.leadDamped++
+			}
+		}
 		if gun != nil {
-			gy, gp = b.lead(muzzle, tp, tv, gun.Stats.Speed, grounded)
+			gy, gp = b.lead(muzzle, tp, tvl, gun.Stats.Speed, grounded)
 			gunOK = dist <= gun.Stats.Range*0.96
 		}
 
@@ -976,9 +1026,19 @@ func (b *Brain) step(o *Obs, act *Action) {
 		tolY := math.Atan2(tr*0.75, math.Max(dist, 1))
 		tolP := math.Atan2(th*0.4, math.Max(dist, 1))
 		slew := func(wantY, wantP float64) bool {
-			ey := math.Max(0, math.Abs(angDiff(wantY, me.Aim[0]))-st.TurnRate*0.05)
-			ep := math.Max(0, math.Abs(wantP-me.Aim[1])-st.PitchRate*0.05)
-			return ey < tolY && ep < tolP
+			cy, cp := st.TurnRate*0.05, st.PitchRate*0.05
+			if b.P.AimGate && (math.Abs(angDiff(wantY, b.lastAim[0])) > tolY || math.Abs(wantP-b.lastAim[1]) > tolP) {
+				// The previous command pointed elsewhere and is still being executed: no turn-ahead credit.
+				cy, cp = 0, 0
+			}
+			ey := math.Max(0, math.Abs(angDiff(wantY, me.Aim[0]))-cy)
+			ep := math.Max(0, math.Abs(wantP-me.Aim[1])-cp)
+			ok := ey < tolY && ep < tolP
+			if !ok && b.P.AimGate && math.Max(0, math.Abs(angDiff(wantY, me.Aim[0]))-st.TurnRate*0.05) < tolY &&
+				math.Max(0, math.Abs(wantP-me.Aim[1])-st.PitchRate*0.05) < tolP {
+				b.aimHeld++
+			}
+			return ok
 		}
 		for i, w := range me.Weapons {
 			if w == nil || i > 1 {
@@ -987,7 +1047,14 @@ func (b *Brain) step(o *Obs, act *Action) {
 			switch w.Kind {
 			case "gun":
 				if gunOK && w.Ammo > 0 && w.Reload <= 0 && slew(gy, gp) {
+					if b.P.FireGate && !b.W.Clear(muzzle, b.leadPoint(muzzle, tp, tvl, gun.Stats.Speed, grounded)) {
+						b.gateHeld++
+						break
+					}
 					act.Fire[i] = true
+					if w.Cooldown <= 0.05 {
+						b.logGunShot(isMech, farm != nil, dist, gp, me.Aim[1], gy, me.Aim[0])
+					}
 				}
 			case "lightning":
 				cone := w.Stats.ConeDeg * math.Pi / 180
@@ -1196,6 +1263,24 @@ func (b *Brain) wantPickup(me *Self, kind string) bool {
 		cur = rank(me.Weapons[1].Kind)
 	}
 	return rank(kind) > cur
+}
+
+// leadPoint returns the predicted impact point used by lead (same iteration), for the fire gate.
+func (b *Brain) leadPoint(muzzle, tp, tv Vec3, speed float64, grounded bool) Vec3 {
+	if speed <= 0 {
+		speed = 252
+	}
+	t := 0.0
+	var p Vec3
+	for k := 0; k < 4; k++ {
+		tt := lat + t
+		p = Vec3{tp[0] + tv[0]*tt, tp[1] + tv[1]*tt, tp[2]}
+		if !grounded {
+			p[2] += tv[2] * tt * 0.5
+		}
+		t = math.Max(0, math.Sqrt((p[0]-muzzle[0])*(p[0]-muzzle[0])+(p[1]-muzzle[1])*(p[1]-muzzle[1])+(p[2]-muzzle[2])*(p[2]-muzzle[2]))-3) / speed
+	}
+	return p
 }
 
 func (b *Brain) lead(muzzle, tp, tv Vec3, speed float64, grounded bool) (float64, float64) {

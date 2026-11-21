@@ -41,6 +41,7 @@ func main() {
 	for {
 		first, ok := <-lines
 		if !ok {
+			mech.WriteStats()
 			return
 		}
 		batch := [][]byte{first}
@@ -82,6 +83,7 @@ func main() {
 			case "obs":
 				latest = raw
 			case "end":
+				mech.WriteStats()
 				return
 			}
 		}
