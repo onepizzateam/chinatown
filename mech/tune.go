@@ -12,7 +12,7 @@ var envOverrides = map[string][]byte{}
 
 // Salt re-seeds the bot's random choices (home spots, unstuck moves) without changing any logic.
 // 0 = the unsalted bot.
-var Salt int64 = 1
+var Salt int64 = 2
 
 func init() {
 	for _, k := range []string{"MECH_P", "MECH_SQ"} {
