@@ -2082,6 +2082,7 @@ func squadParams(p Params) Params {
 	// visible foe within MaxTarget (+0.31 +/- 0.06) and a shorter target lock (Stick 300->120: +0.10).
 	p.AllFoes = true
 	p.Stick = 120
+	p.UseDrops = true
 
 	return applyEnv(p, "MECH_SQ")
 }
