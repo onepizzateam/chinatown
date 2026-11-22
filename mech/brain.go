@@ -173,6 +173,9 @@ type Params struct {
 	LateR   float64
 	HoldOut float64
 	HoldMin float64
+	// PassiveBonus (chinatown, practice exploit): the practice squad engages only 1 + kills/2 bots at a time; the
+	// rest never fire back. Prefer targets that have not hit us for 8 s and are not aiming at us. 0 = off.
+	PassiveBonus float64
 }
 
 func leadK(t *Track, tof float64) float64 {
@@ -642,6 +645,9 @@ func (b *Brain) step(o *Obs, act *Action) {
 		}
 		if now-t.HitMe < 4 {
 			s -= 40
+		}
+		if b.P.PassiveBonus > 0 && now-t.HitMe > 8 && !aimed {
+			s -= b.P.PassiveBonus
 		}
 		if t.Closing > 3 {
 			s -= 15
