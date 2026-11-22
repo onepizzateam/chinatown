@@ -2083,6 +2083,20 @@ func squadParams(p Params) Params {
 	p.AllFoes = true
 	p.Stick = 120
 	p.UseDrops = true
+	// Aggressive practice stack: every practice setting with a positive estimate in the 14,400-match screen.
+	p.MaxTarget = 300
+	p.EngageDist = 75
+	p.Pursue = 0.6
+	p.FinishRush = true
+	p.LowBonus = 300
+	p.HPw = 0.2
+	p.Backstab = 60
+	p.LaserSeek = 320
+	p.LootRadius = 200
+	p.DodgeBoost = 25
+	p.GunRange = 100
+	p.FightLoot = 100
+	p.Econ = true // cubes = +4% damage/HP each up to 10: shoot crates while idle
 
 	return applyEnv(p, "MECH_SQ")
 }
